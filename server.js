@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 
 const PORT = Number(process.env.PORT || 8080);
 const ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
-const WIDTH = 72, HEIGHT = 144, R = 1.5, PAD = 6, SPEED = 210;
+const WIDTH = 72, HEIGHT = 144, R = 1.5, PAD = 8, WALL_HEIGHT = 32;
 const DT = 1 / 120;
 const clients = new Map();
 const rooms = new Map();
@@ -39,7 +39,7 @@ function joinRoom(ws, name, roomId, token) {
 }
 function resetServe(r) {
  r.round=(r.round||0)+1;r.armed=false;r.effect=null;
- r.ball={x:0,y:r.server===0?-88:88,z:10,vx:0,vy:0,vz:0,phase:'serve',last:r.server,bounces:0};
+ r.ball={x:0,y:r.server===0?-88:88,z:10,vx:0,vy:0,vz:0,phase:'serve',last:r.server,bounces:0,walls:0,spin:0};
  for(let i=0;i<2;i++){const p=r.paddles[i];Object.assign(p,{x:0,y:i===0?-102:102,tx:0,ty:i===0?-102:102,vx:0,vy:0});}
 }
 function start(r) {r.status='playing';r.deadline=0;r.ready=[true,true];r.score=[0,0];r.server=0;r.msg='Подача нижнего игрока';resetServe(r);sendState(r);lobby();}
@@ -63,28 +63,46 @@ function point(r,winner,msg) {
 function effect(r,kind,b){r.effect={id:randomUUID(),kind,x:b.x,y:b.y,z:b.z};}
 function hit(r,i,serving) {
  const b=r.ball,p=r.paddles[i],dir=sign(i);
- const aim=clamp(p.vx*.10+(b.x-p.x)*2.5,-25,25);
+ const aim=clamp(p.vx*.055+(b.x-p.x)*2.5,-25,25);
  const targetY=dir*(serving?38:48), targetX=clamp(b.x+aim,-31,31);
  const duration=clamp(Math.abs(targetY-b.y)/195,.38,.95);
  b.vx=(targetX-b.x)/duration;b.vy=(targetY-b.y)/duration;
  b.z=10;b.vz=(R-b.z+150*duration*duration)/duration;
- b.last=i;b.bounces=0;b.phase='flight';b.cooldown=.10;r.armed=false;
+ b.spin=clamp(p.vx*dir/450,-1,1);b.last=i;b.bounces=0;b.walls=0;b.phase='flight';b.cooldown=.10;r.armed=false;
  effect(r,'hit',b);r.msg=serving?'Подача':'Розыгрыш';
+}
+// Swept relative motion prevents fast cursor strokes jumping through the ball.
+function contact(p,b,old=b){
+ const ax=old.x-(p.ox??p.x),ay=old.y-(p.oy??p.y);
+ const dx=(b.x-p.x)-ax,dy=(b.y-p.y)-ay;
+ const t=clamp(-(ax*dx+ay*dy)/(dx*dx+dy*dy||1),0,1);
+ return Math.hypot(ax+dx*t,ay+dy*t)<PAD+R;
 }
 function tick(r) {
  if(r.status==='ready'){if(now()>=r.deadline)kickUnready(r);return;}
  if(r.status==='paused'){if(now()>=r.graceUntil)finish(r,other(r.disconnected),'Соперник отключился');return;}
  if(r.status==='intermission'){if(now()>=r.deadline){resetServe(r);r.status='playing';r.deadline=0;r.msg='Кликни, затем коснись мяча ракеткой';sendState(r);lobby();}return;}
  if(r.status!=='playing')return;
- for(const p of r.paddles){const dx=p.tx-p.x,dy=p.ty-p.y,d=Math.hypot(dx,dy),step=Math.min(SPEED*DT,d);const ox=p.x,oy=p.y;if(d>.001){p.x+=dx/d*step;p.y+=dy/d*step;}p.vx=(p.x-ox)/DT;p.vy=(p.y-oy)/DT;}
+ for(const p of r.paddles){p.ox=p.x;p.oy=p.y;p.x=p.tx;p.y=p.ty;p.vx=clamp((p.x-p.ox)/DT,-450,450);p.vy=clamp((p.y-p.oy)/DT,-450,450);}
  const b=r.ball;
- if(b.phase==='serve'){const p=r.paddles[r.server];if(r.armed&&Math.hypot(p.x-b.x,p.y-b.y)<PAD+R&&Math.hypot(p.vx,p.vy)>5)hit(r,r.server,true);return;}
+ if(b.phase==='serve'){const p=r.paddles[r.server];if(r.armed&&contact(p,b)&&Math.hypot(p.vx,p.vy)>5)hit(r,r.server,true);return;}
  if(b.phase!=='flight')return;
  const old={x:b.x,y:b.y,z:b.z};b.cooldown=Math.max(0,(b.cooldown||0)-DT);
+ // Side spin applies a bounded sideways Magnus acceleration.
+ const spin=b.spin||0, speed=Math.hypot(b.vx,b.vy)||1;
+ b.vx+=spin*65*(b.vy/speed)*DT;b.vy-=spin*65*(b.vx/speed)*DT;b.spin=spin*Math.exp(-.12*DT);
  b.x+=b.vx*DT;b.y+=b.vy*DT;b.z+=b.vz*DT-150*DT*DT;b.vz-=300*DT;
  if(old.y*b.y<=0&&old.y!==b.y){const t=-old.y/(b.y-old.y),z=old.z+(b.z-old.z)*t;if(z<R+6)return point(r,other(b.last),'Мяч попал в сетку');}
+ // A wall exists only beside the tabletop, not in the run-up area.
+ const limit=WIDTH/2-R;
+ if(Math.abs(b.y)<=HEIGHT/2 && b.z<=WALL_HEIGHT+R && Math.abs(b.x)>=limit && ((b.x>0&&b.vx>0)||(b.x<0&&b.vx<0))){
+  const half=b.y<0?0:1;b.walls=(b.walls||0)+1;
+  if(half===b.last)return point(r,other(b.last),'Фол: рикошет на своей половине');
+  if(b.walls>1)return point(r,other(b.last),'Фол: второй рикошет от стены');
+  b.x=Math.sign(b.x)*limit;b.vx*=-.94;b.spin*=-.75;effect(r,'wall',b);
+ }
  const receiver=other(b.last),p=r.paddles[receiver];
- if(b.cooldown===0&&b.z>=2&&b.z<=18&&Math.hypot(b.x-p.x,b.y-p.y)<PAD+R){
+ if(b.cooldown===0&&b.z>=2&&b.z<=18&&contact(p,b,old)){
   if(b.bounces!==1)return point(r,b.last,'Удар до отскока: фол');
   hit(r,receiver,false);return;
  }
@@ -94,7 +112,7 @@ function tick(r) {
   const half=b.y<0?0:1;
   if(half===b.last)return point(r,other(b.last),'Мяч коснулся своей половины');
   b.bounces++;if(b.bounces>1)return point(r,b.last,'Два отскока на половине соперника');
-  b.z=R;b.vz=Math.abs(b.vz)*.87;effect(r,'bounce',b);
+  b.z=R;b.vz=Math.abs(b.vz)*.87;b.vx+=(b.spin||0)*sign(b.last)*22;effect(r,'bounce',b);
  }
  if(Math.abs(b.x)>80||Math.abs(b.y)>140)return point(r,b.bounces===1?b.last:other(b.last),'Мяч вышел из игровой зоны');
 }

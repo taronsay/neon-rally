@@ -19,6 +19,7 @@
 </div>
 <style>
 #nr-game{position:relative;width:min(100%,520px);aspect-ratio:1/2;min-height:580px;margin:0 auto;background:#020a1b;color:#d8f5ff;font-family:Inter,system-ui,sans-serif;overflow:hidden;border:1px solid #1b80c8;border-radius:18px;isolation:isolate;touch-action:none;user-select:none;box-shadow:0 0 32px #0056bb22}
+#nr-game.nr-playing .nr-stage,#nr-game.nr-playing canvas{cursor:none}
 #nr-game *,#nr-game *:before{box-sizing:border-box}#nr-game [hidden]{display:none!important}
 #nr-game .nr-stage,#nr-game .nr-hud{position:absolute;inset:0}#nr-game canvas{display:block;width:100%;height:100%}#nr-game .nr-hud{pointer-events:none}#nr-game button,#nr-game input,#nr-game .nr-panel{pointer-events:auto}
 #nr-game .nr-topline{position:absolute;left:14px;right:14px;top:12px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:10px;letter-spacing:.08em;text-shadow:0 0 12px #1ba8ff}#nr-game .nr-brand{font-size:13px;font-weight:800}#nr-game .nr-brand b,#nr-game .nr-glow{color:#31d8ff}#nr-game .nr-connection{color:#8ac7e4;font-size:9px}
@@ -31,10 +32,11 @@
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js';
 // Replace with your Render WebSocket URL. Keep the URL you used before.
-const WS_URL = 'wss://YOUR-SERVER-DOMAIN.example';
+const WS_URL = 'wss://neon-rally-server.onrender.com';
 const $ = id => document.getElementById(id);
 const root=$('nr-game'), stage=$('nr-stage');
-const W=72,H=144,PAD=6,R=1.5;
+let localTarget=null,pendingMove=false;
+const W=72,H=144,PAD=8,R=1.5;
 const token=sessionStorage.getItem('nr_token') || crypto.randomUUID(); sessionStorage.setItem('nr_token',token);
 let ws,side=0,roomId=null,snapshot=null,lobby=[],lastToast='',toastUntil=0,retry=null,lastSend=0;
 const scene=new THREE.Scene();scene.background=new THREE.Color('#020a1b');
@@ -60,6 +62,13 @@ for(const y of [-H/2,H/2])rect(W,.8,0,y,'#c3f3ff',1,1);
 // The net is shown as a mesh strip from overhead, with posts.
 rect(W+5,2.2,0,0,'#38caff',.55,6);
 for(let x=-36;x<=36;x+=2)rect(.25,2.5,x,0,'#e1f8ff',.9,6.1);
+// Tall side walls: top rim, translucent body, supports. No end walls.
+for(const x of [-W/2-1.2,W/2+1.2]){
+ rect(2.4,H,x,0,'#1261b1',.7,2);
+ rect(.8,H,x,0,'#75e7ff',1,15);
+ rect(3.6,H,x,0,'#168bff',.13,14);
+ for(let y=-68;y<=68;y+=17)rect(4,.6,x,y,'#7bdaff',.55,14.2);
+}
 for(const x of [-39,39]){const post=circle(1.4,'#c8f5ff',1,6.2);post.position.x=x;}
 function paddle(color){
  const group=new THREE.Group();arena.add(group);
@@ -74,13 +83,14 @@ const ballGlow=circle(3.5,'#71dfff',.2,11),ball=circle(R,'#ffffff',1,11.2);
 const shadow=circle(R,'#000714',.65,1.3);
 const tether=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3()]),new THREE.LineBasicMaterial({color:'#70dfff',transparent:true,opacity:.35}));arena.add(tether);
 const impact=ring(1,1.5,'#c9faff',1,1.5);impact.visible=false;
-const balls=[ballGlow,ball,shadow];balls.forEach(m=>m.visible=false);
+const spinMark=circle(.45,'#087fc6',1,12.4);
+const balls=[ballGlow,ball,shadow,spinMark];balls.forEach(m=>m.visible=false);
 let ballPos=new THREE.Vector2(),ballInitialized=false,frames=[],seenEffect=null,impactAt=0,previousRound=-1;
 const heightOffset=z=>z*.38;
 function toast(message,ms=2200){if(!message)return;$('nr-toast').textContent=message;$('nr-toast').hidden=false;toastUntil=performance.now()+ms;}
 function stateUI(s){
- snapshot=s;
- if(s.round!==previousRound){frames=[];previousRound=s.round;ballInitialized=false;}
+ snapshot=s;root.classList.toggle('nr-playing',s.status==='playing');
+ if(s.round!==previousRound){frames=[];localTarget=null;previousRound=s.round;ballInitialized=false;}
  frames.push({s,t:performance.now()});if(frames.length>16)frames.shift();
  if(['playing','intermission','paused','finished'].includes(s.status)){
   $('nr-scoreboard').hidden=false;
@@ -99,7 +109,7 @@ function stateUI(s){
 function nick(){return $('nr-nick').value.trim().slice(0,18)||'Игрок';}
 function send(m){if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify(m));else toast('Нет соединения с сервером');}
 function tablesUI(){const parent=$('nr-tables');parent.replaceChildren();if(!lobby.length){parent.textContent='Столов пока нет. Создай первый!';return;}for(const t of lobby){const row=document.createElement('div');row.className='nr-table';const label=document.createElement('span');const score=t.score||[0,0];label.textContent=`${t.host} · ${score[0]} : ${score[1]} · ${t.status==='waiting'?'Свободен':t.status==='paused'?'Пауза':'Играют'}`;const join=document.createElement('button');join.textContent=t.status==='waiting'?'ИГРАТЬ':'ЗАНЯТ';join.disabled=t.status!=='waiting';join.onclick=()=>send({type:'join',id:t.id,name:nick(),token});row.append(label,join);parent.append(row);}}
-function home(){roomId=null;snapshot=null;frames=[];ballInitialized=false;mine.initialized=false;theirs.initialized=false;lastToast='';$('nr-scoreboard').hidden=true;$('nr-center').hidden=false;$('nr-home').hidden=false;$('nr-room').hidden=true;$('nr-exit').hidden=true;$('nr-bottom').hidden=true;$('nr-heading').textContent='NEON RALLY';send({type:'list'});}
+function home(){roomId=null;snapshot=null;localTarget=null;root.classList.remove('nr-playing');frames=[];ballInitialized=false;mine.initialized=false;theirs.initialized=false;lastToast='';$('nr-scoreboard').hidden=true;$('nr-center').hidden=false;$('nr-home').hidden=false;$('nr-room').hidden=true;$('nr-exit').hidden=true;$('nr-bottom').hidden=true;$('nr-heading').textContent='NEON RALLY';send({type:'list'});}
 function connect(){
  if(WS_URL.includes('YOUR-SERVER-DOMAIN')){$('nr-connection').textContent='● УКАЖИ WS_URL';$('nr-tables').textContent='Укажи свой wss:// адрес Render в коде.';return;}
  ws=new WebSocket(WS_URL);$('nr-connection').textContent='● ПОДКЛЮЧЕНИЕ';
@@ -112,7 +122,7 @@ function connect(){
   if(m.type==='kicked'){home();toast(m.message,3500);}
   if(m.type==='error')toast(m.message,3000);
  };
- ws.onclose=()=>{$('nr-connection').textContent='● НЕТ СОЕДИНЕНИЯ';if(roomId)toast('Переподключаемся...',2400);clearTimeout(retry);retry=setTimeout(connect,2000);};
+ ws.onclose=()=>{$('nr-connection').textContent='● НЕТ СОЕДИНЕНИЯ';root.classList.remove('nr-playing');localTarget=null;if(roomId)toast('Переподключаемся...',2400);clearTimeout(retry);retry=setTimeout(connect,2000);};
  ws.onerror=()=>{};
 }
 $('nr-create').onclick=()=>send({type:'create',name:nick(),token});$('nr-refresh').onclick=()=>send({type:'list'});$('nr-ready').onclick=()=>send({type:'ready'});
@@ -124,8 +134,10 @@ function pointer(e){
  const ndc=new THREE.Vector3(2*(e.clientX-bound.left)/bound.width-1,1-2*(e.clientY-bound.top)/bound.height,0);
  ndc.unproject(camera);
  const x=side===1?-ndc.x:ndc.x,y=side===1?-ndc.y:ndc.y;
- const time=performance.now();if(time-lastSend<25)return;lastSend=time;
- send({type:'move',x,y});
+ localTarget={x:THREE.MathUtils.clamp(x,-58,58),y:side===0?THREE.MathUtils.clamp(y,-112,-PAD):THREE.MathUtils.clamp(y,PAD,112)};
+ pendingMove=true;
+ const time=performance.now();if(time-lastSend<16)return;lastSend=time;
+ send({type:'move',...localTarget});pendingMove=false;
 }
 stage.addEventListener('pointermove',pointer);stage.addEventListener('pointerdown',e=>{pointer(e);if(snapshot?.ball.phase==='serve')send({type:'serve'});});
 function resize(){const w=stage.clientWidth,h=stage.clientHeight;if(!w||!h)return;renderer.setSize(w,h,false);const a=w/h,worldH=Math.max(252,136/a),worldW=worldH*a;camera.left=-worldW/2;camera.right=worldW/2;camera.top=worldH/2;camera.bottom=-worldH/2;camera.updateProjectionMatrix();}
@@ -133,6 +145,7 @@ new ResizeObserver(resize).observe(stage);resize();
 const flip=(p)=>side===1?[-p.x,-p.y]:[p.x,p.y];
 function animate(t){
  requestAnimationFrame(animate);
+ if(pendingMove&&localTarget&&snapshot?.status==='playing'&&t-lastSend>=16){lastSend=t;send({type:'move',...localTarget});pendingMove=false;}
  // Keep field fixed. Transform player positions instead of rotating the world.
  const s=snapshot,show=!!s&&['playing','intermission','paused','finished'].includes(s.status);
  for(const item of [mine,theirs])for(const m of item.parts)m.visible=show;
@@ -144,7 +157,7 @@ function animate(t){
   const k=f1.t===f0.t?1:THREE.MathUtils.clamp((target-f0.t)/(f1.t-f0.t),0,1);
   const mix=(a,b,key)=>a[key]+(b[key]-a[key])*k;
   for(const [item,i] of [[mine,side],[theirs,1-side]]){
-   const p0=f0.s.paddles[i],p1=f1.s.paddles[i];const [x,y]=flip({x:mix(p0,p1,'x'),y:mix(p0,p1,'y')});
+   const p0=f0.s.paddles[i],p1=f1.s.paddles[i];const [x,y]=flip(i===side&&localTarget&&s.status==='playing'?localTarget:{x:mix(p0,p1,'x'),y:mix(p0,p1,'y')});
    item.group.position.set(x,y,0);item.group.rotation.z=(i===side?0:Math.PI)+THREE.MathUtils.clamp((p1.x-p0.x)*.06,-.5,.5);
   }
   const b0=f0.s.ball,b1=f1.s.ball;
@@ -152,10 +165,11 @@ function animate(t){
   const z=Number.isFinite(b0.z)&&Number.isFinite(b1.z)?mix(b0,b1,'z'):10,offset=heightOffset(z);
   shadow.position.set(x,y,1.3);shadow.scale.setScalar(1+z*.022);shadow.material.opacity=Math.max(.12,.65-z*.015);
   for(const m of [ball,ballGlow]){m.position.set(x,y+offset,12);m.scale.setScalar(1+z*.009);}
+  const spin=s.ball.spin||0,angle=t*.012*(1+Math.abs(spin)*4)*Math.sign(spin||1);spinMark.position.set(x+Math.cos(angle)*R*.65,y+offset+Math.sin(angle)*R*.65,12.4);
   const positions=tether.geometry.attributes.position;positions.setXYZ(0,x,y,2);positions.setXYZ(1,x,y+offset,10);positions.needsUpdate=true;tether.visible=true;
-  if(s.effect&&s.effect.id!==seenEffect){seenEffect=s.effect.id;impactAt=t;const [ex,ey]=flip(s.effect);impact.position.set(ex,ey+(s.effect.kind==='hit'?heightOffset(s.effect.z):0),13);impact.material.color.set(s.effect.kind==='hit'?'#fff2a8':'#5ee9ff');}
+  if(s.effect&&s.effect.id!==seenEffect){seenEffect=s.effect.id;impactAt=t;const [ex,ey]=flip(s.effect);impact.position.set(ex,ey+(s.effect.kind==='hit'?heightOffset(s.effect.z):0),13);impact.material.color.set(s.effect.kind==='hit'?'#fff2a8':s.effect.kind==='wall'?'#ff8edf':'#5ee9ff');}
   const age=(t-impactAt)/420;impact.visible=age<1&&impactAt>0;impact.scale.setScalar(1+age*7);impact.material.opacity=Math.max(0,1-age);
-  $('nr-bottom').textContent=s.status==='intermission'?`${s.msg} · следующий розыгрыш через ${Math.max(0,(s.deadline-Date.now())/1000).toFixed(1)} с`:s.ball.phase==='serve'?(s.server===side?'КЛИКНИ И ПОДВЕДИ РАКЕТКУ К МЯЧУ':'ПОДАЧА СОПЕРНИКА'):'ВЕРНИ МЯЧ ПОСЛЕ ОДНОГО ОТСКОКА';
+  $('nr-bottom').textContent=s.status==='intermission'?`${s.msg} · следующий розыгрыш через ${Math.max(0,(s.deadline-Date.now())/1000).toFixed(1)} с`:s.ball.phase==='serve'?(s.server===side?'КЛИКНИ И ПОДВЕДИ РАКЕТКУ К МЯЧУ':'ПОДАЧА СОПЕРНИКА'):`ВРАЩЕНИЕ: ${Math.round(Math.abs(s.ball.spin||0)*100)}% · БОКОВОЙ ВЗМАХ ЗАКРУЧИВАЕТ МЯЧ`;
  }else{tether.visible=false;impact.visible=false;mine.initialized=false;theirs.initialized=false;ballInitialized=false;}
  animate.prev=t;
  if(s?.status==='ready')$('nr-clock').textContent=`${Math.max(0,Math.ceil((s.deadline-Date.now())/1000))} сек.`;

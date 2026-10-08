@@ -10,3 +10,11 @@ for(let n=0;n<500;n++)tick(r);assert.equal(r.score[0],1,'pause cannot repeatedly
 r=room();resetServe(r);Object.assign(r.ball,{phase:'flight',last:0,bounces:0,x:0,y:0.1,z:2,vx:0,vy:100,vz:0});r.ball.y=-.1;tick(r);assert.equal(r.score[1],1,'net fault awards opponent');
 r=room();resetServe(r);r.score=[8,8];point(r,0,'test');assert.equal(r.status,'intermission');time+=1801;tick(r);point(r,1,'test');assert.equal(r.status,'intermission');time+=1801;tick(r);point(r,0,'test');time+=1801;tick(r);point(r,0,'test');assert.equal(r.status,'finished','win by two beyond nine');
 console.log('PASS: serve trajectory, landing, missed return, round lock, click reset, net, deuce');
+function wallRoom(y,walls=0){const r=room();resetServe(r);r.paddles[0].x=r.paddles[0].tx=50;r.paddles[1].x=r.paddles[1].tx=50;Object.assign(r.ball,{phase:'flight',x:34.4,y,z:20,vx:100,vy:30,vz:0,last:0,bounces:0,walls,spin:.5,cooldown:1});return r;}
+r=wallRoom(40);tick(r);assert.equal(r.score[1],0);assert(r.ball.vx<0);assert.equal(r.ball.walls,1);
+r=wallRoom(-40);tick(r);assert.equal(r.score[1],1,'own-side wall is a fault');
+r=wallRoom(40,1);tick(r);assert.equal(r.score[1],1,'second wall is a fault');
+r=wallRoom(40);r.ball.z=45;tick(r);assert(r.ball.vx>0,'ball above wall does not ricochet');
+r=room();resetServe(r);r.armed=true;Object.assign(r.paddles[0],{x:-30,tx:30,y:-88,ty:-88});tick(r);assert.equal(r.ball.phase,'flight','fast stroke cannot tunnel');assert(Math.abs(r.ball.spin)>.9,'sideways stroke produces spin');
+const straight=room(),curved=room();resetServe(straight);resetServe(curved);for(const q of [straight,curved]){Object.assign(q.ball,{phase:'flight',x:0,y:20,z:25,vx:0,vy:100,vz:30,last:0,bounces:0,cooldown:1,spin:0});}curved.ball.spin=1;for(let n=0;n<20;n++){tick(straight);tick(curved);}assert(curved.ball.x>straight.ball.x+.5,'spin curves flight');
+console.log('PASS: legal wall, own-side fault, second wall fault, wall height, swept stroke, spin trajectory');
