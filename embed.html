@@ -8,7 +8,7 @@
       <div class="nr-panel" id="nr-panel">
         <div class="nr-panel-heading" id="nr-heading">NEON RALLY</div>
         <p id="nr-subtitle">Онлайн-арена · 1 на 1 · до 9 очков, преимущество 2</p>
-        <div class="nr-home" id="nr-home"><input id="nr-nick" placeholder="Ваш никнейм" maxlength="18" value="Игрок"/><div class="nr-actions"><button id="nr-create">+ СОЗДАТЬ СТОЛ</button><button id="nr-refresh" class="nr-secondary">↻ ОБНОВИТЬ</button></div><div class="nr-table-title">ОТКРЫТЫЕ СТОЛЫ</div><div id="nr-tables" class="nr-tables">Подключение...</div></div>
+        <div class="nr-home" id="nr-home"><input id="nr-nick" placeholder="Ваш никнейм" maxlength="18" value="Игрок"/><div class="nr-actions"><button id="nr-create">+ СОЗДАТЬ СТОЛ</button><button id="nr-refresh" class="nr-secondary">↻ ОБНОВИТЬ</button></div><div class="nr-table-title">СТОЛЫ · СЧЁТ В РЕАЛЬНОМ ВРЕМЕНИ</div><div id="nr-tables" class="nr-tables">Подключение...</div></div>
         <div id="nr-room" hidden><div class="nr-roomcode">КОД СТОЛА <b id="nr-code">—</b></div><div id="nr-info" class="nr-info">Ожидание...</div><div id="nr-clock" class="nr-clock"></div><div class="nr-actions"><button id="nr-ready" hidden>ГОТОВ ✓</button><button id="nr-leave" class="nr-secondary">ПОКИНУТЬ СТОЛ</button></div></div>
       </div>
     </div>
@@ -34,11 +34,11 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.m
 const WS_URL = 'wss://YOUR-SERVER-DOMAIN.example';
 const $ = id => document.getElementById(id);
 const root=$('nr-game'), stage=$('nr-stage');
-const W=72,H=144,PAD=6.4,R=2.4;
+const W=72,H=144,PAD=6,R=1.5;
 const token=sessionStorage.getItem('nr_token') || crypto.randomUUID(); sessionStorage.setItem('nr_token',token);
 let ws,side=0,roomId=null,snapshot=null,lobby=[],lastToast='',toastUntil=0,retry=null,lastSend=0;
 const scene=new THREE.Scene();scene.background=new THREE.Color('#020a1b');
-const camera=new THREE.OrthographicCamera(-39,39,78,-78,0.1,100);camera.position.z=30;
+const camera=new THREE.OrthographicCamera(-39,39,78,-78,0.1,300);camera.position.z=180;
 const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false,powerPreference:'high-performance'});
 renderer.setPixelRatio(Math.min(devicePixelRatio||1,1.5));renderer.outputColorSpace=THREE.SRGBColorSpace;stage.appendChild(renderer.domElement);
 const arena=new THREE.Group();scene.add(arena);
@@ -47,38 +47,48 @@ function rect(w,h,x,y,color,alpha=1,z=0){const m=new THREE.Mesh(new THREE.PlaneG
 function circle(r,c,a=1,z=4){const m=new THREE.Mesh(new THREE.CircleGeometry(r,48),mat(c,a));m.position.z=z;arena.add(m);return m;}
 function ring(inside,outside,c,a=1,z=4){const m=new THREE.Mesh(new THREE.RingGeometry(inside,outside,64),mat(c,a));m.position.z=z;arena.add(m);return m;}
 function line(points,c,a=1){const geo=new THREE.BufferGeometry().setFromPoints(points.map(([x,y])=>new THREE.Vector3(x,y,1)));arena.add(new THREE.Line(geo,new THREE.LineBasicMaterial({color:c,transparent:a<1,opacity:a})));}
-rect(W,H,0,0,'#06162f',1,-3);rect(W,H/2,0,-H/4,'#082343',.62,-2);rect(W,H/2,0,H/4,'#051329',.62,-2);
-for(let x=-30;x<=30;x+=12)line([[x,-71],[x,71]],'#225077',.19);
-for(let y=-60;y<=60;y+=12)line([[-35,y],[35,y]],'#225077',.19);
-rect(W,.3,0,0,'#2bcaff',.65,1);
-for(let k=0;k<4;k++){
- const a=.42/(k+1),d=k*.38;
- rect(W+d,.26+k*.3,0,H/2+d/2,'#0ba5ff',a,2);
- rect(W+d,.26+k*.3,0,-H/2-d/2,'#0ba5ff',a,2);
- rect(.26+k*.3,H+d,-W/2-d/2,0,'#0ba5ff',a,2);
- rect(.26+k*.3,H+d,W/2+d/2,0,'#0ba5ff',a,2);
-}
-for(const y of [-58,58]) {const m=ring(9,9.2,'#30b9fa',.16,0);m.position.y=y;}
-// 3D-like air-hockey mallets: base, outer rim, beveled body, and handle.
+// Table surface and the surrounding movement area. Height is world Z.
+rect(128,240,0,0,'#020c20',1,-4);
+for(let x=-60;x<=60;x+=12)line([[x,-116],[x,116]],'#153458',.35);
+for(let y=-108;y<=108;y+=12)line([[-60,y],[60,y]],'#153458',.35);
+rect(W+3,H+3,0,0,'#27c4ff',1,-2);
+rect(W,H,0,0,'#073568',1,-1);
+rect(W,.7,0,0,'#bfefff',1,1);
+rect(.4,H,0,0,'#9adfff',.7,1);
+for(const x of [-W/2,W/2])rect(.8,H,x,0,'#c3f3ff',1,1);
+for(const y of [-H/2,H/2])rect(W,.8,0,y,'#c3f3ff',1,1);
+// The net is shown as a mesh strip from overhead, with posts.
+rect(W+5,2.2,0,0,'#38caff',.55,6);
+for(let x=-36;x<=36;x+=2)rect(.25,2.5,x,0,'#e1f8ff',.9,6.1);
+for(const x of [-39,39]){const post=circle(1.4,'#c8f5ff',1,6.2);post.position.x=x;}
 function paddle(color){
- const glow=circle(9.3,color,.12,3),shadow=circle(7.5,'#000b1c',.60,3.1),rim=circle(PAD+0.65,color,.85,4),body=circle(PAD,'#12365e',1,4.2),bevel=ring(4.3,5.4,'#b2efff',.85,4.4),grip=circle(3.45,color,1,4.55),shine=circle(1.45,'#e9fbff',.92,4.7);
- const parts=[glow,shadow,rim,body,bevel,grip,shine];parts.forEach(x=>x.visible=false);
- return {parts,position:new THREE.Vector2(),initialized:false};
+ const group=new THREE.Group();arena.add(group);
+ const handle=new THREE.Mesh(new THREE.PlaneGeometry(2.2,8),mat('#cfac78'));handle.position.set(0,-8,9);group.add(handle);
+ const rim=new THREE.Mesh(new THREE.CircleGeometry(PAD+.5,48),mat('#a5efff'));rim.position.z=9.1;rim.scale.y=1.13;group.add(rim);
+ const rubber=new THREE.Mesh(new THREE.CircleGeometry(PAD,48),mat(color));rubber.position.z=9.2;rubber.scale.y=1.13;group.add(rubber);
+ const seam=new THREE.Mesh(new THREE.PlaneGeometry(.4,9),mat('#ffffff',.3));seam.position.z=9.3;group.add(seam);
+ group.visible=false;return {parts:[group],group,position:new THREE.Vector2(),initialized:false};
 }
-const mine=paddle('#38d8ff'),theirs=paddle('#ff548c');
-const ballGlow=circle(7,'#17baff',.2,5),ballRim=ring(2.45,3.2,'#2ccaff',.92,5.1),ball=circle(R,'#faffff',1,5.3),ballDot=circle(.75,'#9beeff',.9,5.5);
-const balls=[ballGlow,ballRim,ball,ballDot];balls.forEach(m=>m.visible=false);
-let ballPos=new THREE.Vector2(),ballInitialized=false;
+const mine=paddle('#138fff'),theirs=paddle('#e63c63');
+const ballGlow=circle(3.5,'#71dfff',.2,11),ball=circle(R,'#ffffff',1,11.2);
+const shadow=circle(R,'#000714',.65,1.3);
+const tether=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3()]),new THREE.LineBasicMaterial({color:'#70dfff',transparent:true,opacity:.35}));arena.add(tether);
+const impact=ring(1,1.5,'#c9faff',1,1.5);impact.visible=false;
+const balls=[ballGlow,ball,shadow];balls.forEach(m=>m.visible=false);
+let ballPos=new THREE.Vector2(),ballInitialized=false,frames=[],seenEffect=null,impactAt=0,previousRound=-1;
+const heightOffset=z=>z*.38;
 function toast(message,ms=2200){if(!message)return;$('nr-toast').textContent=message;$('nr-toast').hidden=false;toastUntil=performance.now()+ms;}
 function stateUI(s){
  snapshot=s;
- if(['playing','paused','finished'].includes(s.status)){
+ if(s.round!==previousRound){frames=[];previousRound=s.round;ballInitialized=false;}
+ frames.push({s,t:performance.now()});if(frames.length>16)frames.shift();
+ if(['playing','intermission','paused','finished'].includes(s.status)){
   $('nr-scoreboard').hidden=false;
   $('nr-score').textContent=`${s.score[1-side]} : ${s.score[side]}`;
   $('nr-me').textContent=s.players[side]||'ВЫ';$('nr-them').textContent=s.players[1-side]||'СОПЕРНИК';
  }else $('nr-scoreboard').hidden=true;
  $('nr-code').textContent=s.id;
- if(s.status==='playing'){$('nr-center').hidden=true;$('nr-exit').hidden=false;$('nr-bottom').hidden=false;}
+ if(['playing','intermission'].includes(s.status)){$('nr-center').hidden=true;$('nr-exit').hidden=false;$('nr-bottom').hidden=false;}
  else {
   $('nr-center').hidden=false;$('nr-exit').hidden=true;$('nr-home').hidden=true;$('nr-room').hidden=false;$('nr-bottom').hidden=true;
   $('nr-heading').textContent=({waiting:'СТОЛ СОЗДАН',ready:'ПОДГОТОВКА',paused:'ПАУЗА',finished:s.winner===side?'ПОБЕДА!':'ПОРАЖЕНИЕ'})[s.status]||'NEON RALLY';
@@ -88,8 +98,8 @@ function stateUI(s){
 }
 function nick(){return $('nr-nick').value.trim().slice(0,18)||'Игрок';}
 function send(m){if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify(m));else toast('Нет соединения с сервером');}
-function tablesUI(){const parent=$('nr-tables');parent.replaceChildren();const tables=lobby.filter(t=>t.status==='waiting'&&t.count===1);if(!tables.length){parent.textContent='Нет свободных столов. Создай первый!';return;}for(const t of tables){const row=document.createElement('div');row.className='nr-table';const label=document.createElement('span');label.textContent=`${t.host} · ${t.id}`;const join=document.createElement('button');join.textContent='ИГРАТЬ';join.onclick=()=>send({type:'join',id:t.id,name:nick(),token});row.append(label,join);parent.append(row);}}
-function home(){roomId=null;snapshot=null;ballInitialized=false;mine.initialized=false;theirs.initialized=false;lastToast='';$('nr-scoreboard').hidden=true;$('nr-center').hidden=false;$('nr-home').hidden=false;$('nr-room').hidden=true;$('nr-exit').hidden=true;$('nr-bottom').hidden=true;$('nr-heading').textContent='NEON RALLY';send({type:'list'});}
+function tablesUI(){const parent=$('nr-tables');parent.replaceChildren();if(!lobby.length){parent.textContent='Столов пока нет. Создай первый!';return;}for(const t of lobby){const row=document.createElement('div');row.className='nr-table';const label=document.createElement('span');const score=t.score||[0,0];label.textContent=`${t.host} · ${score[0]} : ${score[1]} · ${t.status==='waiting'?'Свободен':t.status==='paused'?'Пауза':'Играют'}`;const join=document.createElement('button');join.textContent=t.status==='waiting'?'ИГРАТЬ':'ЗАНЯТ';join.disabled=t.status!=='waiting';join.onclick=()=>send({type:'join',id:t.id,name:nick(),token});row.append(label,join);parent.append(row);}}
+function home(){roomId=null;snapshot=null;frames=[];ballInitialized=false;mine.initialized=false;theirs.initialized=false;lastToast='';$('nr-scoreboard').hidden=true;$('nr-center').hidden=false;$('nr-home').hidden=false;$('nr-room').hidden=true;$('nr-exit').hidden=true;$('nr-bottom').hidden=true;$('nr-heading').textContent='NEON RALLY';send({type:'list'});}
 function connect(){
  if(WS_URL.includes('YOUR-SERVER-DOMAIN')){$('nr-connection').textContent='● УКАЖИ WS_URL';$('nr-tables').textContent='Укажи свой wss:// адрес Render в коде.';return;}
  ws=new WebSocket(WS_URL);$('nr-connection').textContent='● ПОДКЛЮЧЕНИЕ';
@@ -117,30 +127,39 @@ function pointer(e){
  const time=performance.now();if(time-lastSend<25)return;lastSend=time;
  send({type:'move',x,y});
 }
-stage.addEventListener('pointermove',pointer);stage.addEventListener('pointerdown',pointer);
-function resize(){const w=stage.clientWidth,h=stage.clientHeight;if(!w||!h)return;renderer.setSize(w,h,false);const a=w/h,worldH=Math.max(154,78/a),worldW=worldH*a;camera.left=-worldW/2;camera.right=worldW/2;camera.top=worldH/2;camera.bottom=-worldH/2;camera.updateProjectionMatrix();}
+stage.addEventListener('pointermove',pointer);stage.addEventListener('pointerdown',e=>{pointer(e);if(snapshot?.ball.phase==='serve')send({type:'serve'});});
+function resize(){const w=stage.clientWidth,h=stage.clientHeight;if(!w||!h)return;renderer.setSize(w,h,false);const a=w/h,worldH=Math.max(252,136/a),worldW=worldH*a;camera.left=-worldW/2;camera.right=worldW/2;camera.top=worldH/2;camera.bottom=-worldH/2;camera.updateProjectionMatrix();}
 new ResizeObserver(resize).observe(stage);resize();
 const flip=(p)=>side===1?[-p.x,-p.y]:[p.x,p.y];
 function animate(t){
  requestAnimationFrame(animate);
  // Keep field fixed. Transform player positions instead of rotating the world.
- const s=snapshot,show=!!s&&['playing','paused','finished'].includes(s.status);
+ const s=snapshot,show=!!s&&['playing','intermission','paused','finished'].includes(s.status);
  for(const item of [mine,theirs])for(const m of item.parts)m.visible=show;
  balls.forEach(m=>m.visible=show);
  if(show){
-  const factor=1-Math.exp(-Math.min(0.07,(animate.prev? (t-animate.prev)/1000:1/60))*23);
+  // Render a short buffered timeline rather than chasing the newest packet.
+  const target=t-65;let f0=frames[0],f1=frames[frames.length-1];
+  for(let j=1;j<frames.length;j++){if(frames[j].t>=target){f0=frames[j-1];f1=frames[j];break;}f0=frames[j];}
+  const k=f1.t===f0.t?1:THREE.MathUtils.clamp((target-f0.t)/(f1.t-f0.t),0,1);
+  const mix=(a,b,key)=>a[key]+(b[key]-a[key])*k;
   for(const [item,i] of [[mine,side],[theirs,1-side]]){
-   const [x,y]=flip(s.paddles[i]);if(!item.initialized){item.position.set(x,y);item.initialized=true;}else item.position.lerp(new THREE.Vector2(x,y),factor);
-   for(const m of item.parts)m.position.x=item.position.x,m.position.y=item.position.y;
+   const p0=f0.s.paddles[i],p1=f1.s.paddles[i];const [x,y]=flip({x:mix(p0,p1,'x'),y:mix(p0,p1,'y')});
+   item.group.position.set(x,y,0);item.group.rotation.z=(i===side?0:Math.PI)+THREE.MathUtils.clamp((p1.x-p0.x)*.06,-.5,.5);
   }
-  const [x,y]=flip(s.ball);
-  if(!ballInitialized){ballPos.set(x,y);ballInitialized=true;}else ballPos.lerp(new THREE.Vector2(x,y),factor);
-  for(const m of balls)m.position.x=ballPos.x,m.position.y=ballPos.y;
-  ballGlow.scale.setScalar(1+.09*Math.sin(t*.005));
- }else{mine.initialized=false;theirs.initialized=false;ballInitialized=false;}
+  const b0=f0.s.ball,b1=f1.s.ball;
+  const [x,y]=flip({x:mix(b0,b1,'x'),y:mix(b0,b1,'y')});
+  const z=Number.isFinite(b0.z)&&Number.isFinite(b1.z)?mix(b0,b1,'z'):10,offset=heightOffset(z);
+  shadow.position.set(x,y,1.3);shadow.scale.setScalar(1+z*.022);shadow.material.opacity=Math.max(.12,.65-z*.015);
+  for(const m of [ball,ballGlow]){m.position.set(x,y+offset,12);m.scale.setScalar(1+z*.009);}
+  const positions=tether.geometry.attributes.position;positions.setXYZ(0,x,y,2);positions.setXYZ(1,x,y+offset,10);positions.needsUpdate=true;tether.visible=true;
+  if(s.effect&&s.effect.id!==seenEffect){seenEffect=s.effect.id;impactAt=t;const [ex,ey]=flip(s.effect);impact.position.set(ex,ey+(s.effect.kind==='hit'?heightOffset(s.effect.z):0),13);impact.material.color.set(s.effect.kind==='hit'?'#fff2a8':'#5ee9ff');}
+  const age=(t-impactAt)/420;impact.visible=age<1&&impactAt>0;impact.scale.setScalar(1+age*7);impact.material.opacity=Math.max(0,1-age);
+  $('nr-bottom').textContent=s.status==='intermission'?`${s.msg} · следующий розыгрыш через ${Math.max(0,(s.deadline-Date.now())/1000).toFixed(1)} с`:s.ball.phase==='serve'?(s.server===side?'КЛИКНИ И ПОДВЕДИ РАКЕТКУ К МЯЧУ':'ПОДАЧА СОПЕРНИКА'):'ВЕРНИ МЯЧ ПОСЛЕ ОДНОГО ОТСКОКА';
+ }else{tether.visible=false;impact.visible=false;mine.initialized=false;theirs.initialized=false;ballInitialized=false;}
  animate.prev=t;
  if(s?.status==='ready')$('nr-clock').textContent=`${Math.max(0,Math.ceil((s.deadline-Date.now())/1000))} сек.`;
- else if(s?.status==='paused')$('nr-clock').textContent='До 15 секунд';else $('nr-clock').textContent='';
+ else if(s?.status==='paused')$('nr-clock').textContent=`${Math.max(0,Math.ceil((s.graceUntil-Date.now())/1000))} сек.`;else $('nr-clock').textContent='';
  if(!$('nr-toast').hidden&&performance.now()>toastUntil)$('nr-toast').hidden=true;
  renderer.render(scene,camera);
 }

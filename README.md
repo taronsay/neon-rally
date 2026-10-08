@@ -1,18 +1,25 @@
-# NEON RALLY — portrait 1:2 edition
+# NEON RALLY — Ping Pong v3
 
-## Changes
-- 72 × 144 portrait playfield, centred Webflow embed with 1:2 ratio.
-- Large visible ball and styled air-hockey mallets.
-- Smoothed client-side interpolation between network updates; capped renderer pixel density.
-- Adjusted server coordinates, speed, collision sizes and serve placement.
+## Обновление
+1. Распакуй архив.
+2. Замени server.js и package.json в существующем GitHub-репозитории, сделай commit.
+3. Дождись Live на Render. Build: npm install. Start: npm start. Root Directory: пусто, если server.js лежит в корне репозитория.
+4. Открой embed.html и замени wss://YOUR-SERVER-DOMAIN.example своим прежним адресом Render.
+5. Полностью замени код Webflow Embed содержимым embed.html и опубликуй страницу.
+6. Обнови страницы обоих игроков (Ctrl+Shift+R). Сервер и клиент должны обновляться вместе.
 
-## Deploy
-1. Replace `server.js` and `package.json` in your GitHub repository. Commit changes.
-2. Render redeploys the latest commit (or select Manual Deploy → Deploy latest commit).
-3. Edit `embed.html`: change `WS_URL` to your existing `wss://...onrender.com` address.
-4. Replace the COMPLETE previous code in Webflow Code Embed with the contents of `embed.html`, save and publish.
-5. Test in two tabs / browsers. The two clients must connect to the same server deployment.
+## Управление
+Двигай мышью в пределах своей половины, включая пространство за краями стола. Скорость ракетки ограничена, но увеличена. Для подачи кликни по игровому полю, затем подведи ракетку к неподвижному мячу. Новый розыгрыш всегда требует нового клика. Боковое движение и точка контакта изменяют направление удара. Ракетка автоматически принимает мяч на фиксированной игровой высоте; отдельного управления высотой нет.
 
-**Important:** Updating the Embed only will NOT work with the previous server: playfield dimensions changed.
+## Правила этой версии
+Стол 72 × 144, поле движения 128 × 240. Камера сверху; своя сторона внизу. Бортов нет. Мяч летит над столом с гравитацией, должен пересечь сетку и один раз отскочить на половине соперника. Удар до первого отскока — фол. Второй отскок или пропущенный корректный мяч — очко ударившему. Попадание в сетку, свою половину или за стол до корректного отскока — очко сопернику. Упрощённая подача сразу идёт на половину соперника (без первого отскока на собственной половине). Подаёт победитель предыдущего розыгрыша. Игра до 9, преимущество 2. Между розыгрышами 1,8 секунды. Готовность за 10 секунд, отключение — пауза до 15 секунд.
 
-Webflow Code Embed code size: under 50,000 characters. Client-side network interpolation reduces visual jitter but does not eliminate internet latency or cold starts on free hosts.
+Высота видна через движение мяча относительно тени, изменение размера и линию проекции. Кольца отмечают касание ракеткой и столом. Ракетки имеют овальную резиновую поверхность и деревянную ручку. Занятые столы, имена и счёт доступны всем посетителям лобби; обновление раз в секунду и сразу после очка. Это просмотр счёта, не режим наблюдения за ареной.
+
+## Проверки
+node --check server.js
+node physics-test.cjs
+
+Проверены подача, попадание на стол, пропущенный возврат, блокировка счёта во время паузы, новый клик после паузы, сетка, игра с преимуществом 2. Клиентский JavaScript прошёл проверку синтаксиса. Визуальная проверка в браузере и сетевой матч на вашем Render не выполнены.
+
+Сервер хранит столы в памяти: перезапуск удаляет текущие матчи. Используйте один экземпляр сервера. Задержка сети/хостинга может влиять на игру. Клиент использует буфер интерполяции 65 мс; расчёт физики 120 Гц, передача состояния 30 Гц. Three.js загружается с CDN.
