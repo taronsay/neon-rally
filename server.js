@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 
 const PORT = Number(process.env.PORT || 8080);
 const ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
-const WIDTH = 160, HEIGHT = 90, R = 1.85, PAD = 5, SPEED = 89;
+const WIDTH = 72, HEIGHT = 144, R = 2.4, PAD = 6.4, SPEED = 90;
 const DT = 1 / 60;
 const clients = new Map();
 const rooms = new Map();
@@ -28,7 +28,7 @@ function assign(r, index, ws, name, token) { r.players[index] = { ws, name }; r.
 function createRoom(ws, name, token) {
   if (sockRoom.has(ws)) leave(ws);
   const id = randomUUID().slice(0,8).toUpperCase();
-  const r = { id, players:[null,null], slots:[null,null], ready:[false,false], status:'waiting', deadline:0, countdown:0, score:[0,0], server:0, winner:null, msg:'Ожидание соперника', paddles:[{x:0,y:-24,vx:0,vy:0,tx:0,ty:-24},{x:0,y:24,vx:0,vy:0,tx:0,ty:24}], ball:{x:0,y:-36,vx:0,vy:0,phase:'serve',wall:0,contactHalf:0}, graceUntil:0, disconnected:-1 };
+  const r = { id, players:[null,null], slots:[null,null], ready:[false,false], status:'waiting', deadline:0, countdown:0, score:[0,0], server:0, winner:null, msg:'Ожидание соперника', paddles:[{x:0,y:-46,vx:0,vy:0,tx:0,ty:-46},{x:0,y:46,vx:0,vy:0,tx:0,ty:46}], ball:{x:0,y:-59,vx:0,vy:0,phase:'serve',wall:0,contactHalf:0}, graceUntil:0, disconnected:-1 };
   rooms.set(id,r); assign(r,0,ws,name,token); sendState(r); lobby();
 }
 function joinRoom(ws, name, roomId, token) {
@@ -37,7 +37,7 @@ function joinRoom(ws, name, roomId, token) {
   if (!r || r.players[1] || r.status !== 'waiting') return json(ws,{type:'error',message:'Этот стол уже занят или недоступен'});
   assign(r,1,ws,name,token); r.ready=[false,false]; r.deadline=now()+10000; r.status='ready'; r.msg='Оба игрока должны нажать «Готов»'; sendState(r); lobby();
 }
-function resetServe(r) {r.ball={x:0,y:r.server===0 ? -68:68,vx:0,vy:0,phase:'serve',wall:0,contactHalf:r.server}; r.paddles[0].x=0;r.paddles[0].y=-49;r.paddles[0].tx=0;r.paddles[0].ty=-49;r.paddles[1].x=0;r.paddles[1].y=49;r.paddles[1].tx=0;r.paddles[1].ty=49; }
+function resetServe(r) {r.ball={x:0,y:r.server===0 ? -58:58,vx:0,vy:0,phase:'serve',wall:0,contactHalf:r.server}; r.paddles[0].x=0;r.paddles[0].y=-67;r.paddles[0].tx=0;r.paddles[0].ty=-67;r.paddles[1].x=0;r.paddles[1].y=67;r.paddles[1].tx=0;r.paddles[1].ty=67; }
 function start(r) {r.status='playing';r.deadline=0;r.ready=[true,true];r.score=[0,0];r.server=0;r.msg='Подача нижнего игрока';resetServe(r);sendState(r);lobby();}
 function kickUnready(r) {
   const bad=r.ready.findIndex(v => !v);
@@ -57,11 +57,11 @@ function hit(r, i, serving) {
   const b=r.ball,p=r.paddles[i];
   const dir=sign(i); // bottom shoots positive Y, top shoots negative Y
   // Moving sideways changes shot direction; a forward-directed stroke increases speed.
-  const movementX=clamp(p.vx/65,-0.9,0.9);
+  const movementX=clamp(p.vx/75,-0.9,0.9);
   const movementY=clamp(p.vy*dir/75,-0.35,0.4);
   const offset=clamp((b.x-p.x)/PAD,-1,1);
   const nx=clamp(movementX*0.70+offset*0.55,-0.87,0.87);
-  const base=serving?67:clamp(Math.hypot(b.vx,b.vy)*1.035+2,68,105);
+  const base=serving?100:clamp(Math.hypot(b.vx,b.vy)*1.018+1,102,145);
   b.vx=nx*base;
   b.vy=dir*Math.sqrt(Math.max(1,base*base-b.vx*b.vx))*(1+Math.max(0,movementY)*0.16);
   b.phase='flight';b.wall=0;b.contactHalf=i;
