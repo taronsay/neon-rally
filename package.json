@@ -1,9 +1,16 @@
 {
   "name": "neon-rally-server",
-  "version": "1.0.0",
+  "version": "5.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "start": "node server.js" },
-  "dependencies": { "ws": "^8.18.3" },
-  "engines": { "node": ">=20" }
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3",
+    "three": "0.180.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
 }

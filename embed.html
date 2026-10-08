@@ -8,7 +8,7 @@
       <div class="nr-panel" id="nr-panel">
         <div class="nr-panel-heading" id="nr-heading">NEON RALLY</div>
         <p id="nr-subtitle">Онлайн-арена · 1 на 1 · до 9 очков, преимущество 2</p>
-        <div class="nr-home" id="nr-home"><input id="nr-nick" placeholder="Ваш никнейм" maxlength="18" value="Игрок"/><div class="nr-actions"><button id="nr-create">+ СОЗДАТЬ СТОЛ</button><button id="nr-refresh" class="nr-secondary">↻ ОБНОВИТЬ</button></div><div class="nr-table-title">СТОЛЫ · СЧЁТ В РЕАЛЬНОМ ВРЕМЕНИ</div><div id="nr-tables" class="nr-tables">Подключение...</div></div>
+        <div class="nr-home" id="nr-home"><input id="nr-nick" placeholder="Ваш никнейм" maxlength="18" value="Игрок"/><div class="nr-actions"><button id="nr-create">+ СОЗДАТЬ СТОЛ</button><button id="nr-refresh" class="nr-secondary">↻ ОБНОВИТЬ</button></div><div class="nr-actions"><button id="nr-lan" class="nr-secondary">ЛОКАЛЬНЫЕ СТОЛЫ · Wi-Fi</button></div><div id="nr-lan-panel" hidden><p>Запусти сервер на компьютере. Введи адрес этого компьютера в вашей Wi-Fi сети:</p><input id="nr-lan-address" placeholder="192.168.1.10:8080"/><button id="nr-lan-open">ОТКРЫТЬ LAN</button><p id="nr-lan-error"></p></div><div class="nr-table-title">СТОЛЫ · СЧЁТ В РЕАЛЬНОМ ВРЕМЕНИ</div><div id="nr-tables" class="nr-tables">Подключение...</div></div>
         <div id="nr-room" hidden><div class="nr-roomcode">КОД СТОЛА <b id="nr-code">—</b></div><div id="nr-info" class="nr-info">Ожидание...</div><div id="nr-clock" class="nr-clock"></div><div class="nr-actions"><button id="nr-ready" hidden>ГОТОВ ✓</button><button id="nr-leave" class="nr-secondary">ПОКИНУТЬ СТОЛ</button></div></div>
       </div>
     </div>
@@ -33,11 +33,14 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js';
 // Replace with your Render WebSocket URL. Keep the URL you used before.
 const WS_URL = 'wss://neon-rally-server.onrender.com';
+const IS_LAN=WS_URL.startsWith('ws://')&&location.protocol==='http:';
 const $ = id => document.getElementById(id);
 const root=$('nr-game'), stage=$('nr-stage');
-let localTarget=null,pendingMove=false;
+let localTarget=null,pendingMove=false,pendingPrediction=null,lastPointer=null,strokeX=0;
+let rtt=0,clockOffset=0,clockReady=false,pingTimer=null,lastStateAt=0;
 const W=72,H=144,PAD=8,R=1.5;
-const token=sessionStorage.getItem('nr_token') || crypto.randomUUID(); sessionStorage.setItem('nr_token',token);
+const uid=()=>globalThis.crypto?.randomUUID?.()||'nr-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+const token=sessionStorage.getItem('nr_token') || uid(); sessionStorage.setItem('nr_token',token);
 let ws,side=0,roomId=null,snapshot=null,lobby=[],lastToast='',toastUntil=0,retry=null,lastSend=0;
 const scene=new THREE.Scene();scene.background=new THREE.Color('#020a1b');
 const camera=new THREE.OrthographicCamera(-39,39,78,-78,0.1,300);camera.position.z=180;
@@ -89,8 +92,10 @@ let ballPos=new THREE.Vector2(),ballInitialized=false,frames=[],seenEffect=null,
 const heightOffset=z=>z*.38;
 function toast(message,ms=2200){if(!message)return;$('nr-toast').textContent=message;$('nr-toast').hidden=false;toastUntil=performance.now()+ms;}
 function stateUI(s){
- snapshot=s;root.classList.toggle('nr-playing',s.status==='playing');
- if(s.round!==previousRound){frames=[];localTarget=null;previousRound=s.round;ballInitialized=false;}
+ snapshot=s;if(s.ball.phase!=='serve')serveArmed=false;lastStateAt=performance.now();
+ if(pendingPrediction&&(s.round!==pendingPrediction.round||s.status!=='playing'||s.ball.shot!==pendingPrediction.baseShot))pendingPrediction=null;
+ root.classList.toggle('nr-playing',s.status==='playing');
+ if(s.round!==previousRound){frames=[];localTarget=null;pendingPrediction=null;lastPointer=null;serveArmed=false;previousRound=s.round;ballInitialized=false;}
  frames.push({s,t:performance.now()});if(frames.length>16)frames.shift();
  if(['playing','intermission','paused','finished'].includes(s.status)){
   $('nr-scoreboard').hidden=false;
@@ -109,12 +114,13 @@ function stateUI(s){
 function nick(){return $('nr-nick').value.trim().slice(0,18)||'Игрок';}
 function send(m){if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify(m));else toast('Нет соединения с сервером');}
 function tablesUI(){const parent=$('nr-tables');parent.replaceChildren();if(!lobby.length){parent.textContent='Столов пока нет. Создай первый!';return;}for(const t of lobby){const row=document.createElement('div');row.className='nr-table';const label=document.createElement('span');const score=t.score||[0,0];label.textContent=`${t.host} · ${score[0]} : ${score[1]} · ${t.status==='waiting'?'Свободен':t.status==='paused'?'Пауза':'Играют'}`;const join=document.createElement('button');join.textContent=t.status==='waiting'?'ИГРАТЬ':'ЗАНЯТ';join.disabled=t.status!=='waiting';join.onclick=()=>send({type:'join',id:t.id,name:nick(),token});row.append(label,join);parent.append(row);}}
-function home(){roomId=null;snapshot=null;localTarget=null;root.classList.remove('nr-playing');frames=[];ballInitialized=false;mine.initialized=false;theirs.initialized=false;lastToast='';$('nr-scoreboard').hidden=true;$('nr-center').hidden=false;$('nr-home').hidden=false;$('nr-room').hidden=true;$('nr-exit').hidden=true;$('nr-bottom').hidden=true;$('nr-heading').textContent='NEON RALLY';send({type:'list'});}
+function home(){roomId=null;snapshot=null;localTarget=null;pendingPrediction=null;lastPointer=null;root.classList.remove('nr-playing');frames=[];ballInitialized=false;mine.initialized=false;theirs.initialized=false;lastToast='';$('nr-scoreboard').hidden=true;$('nr-center').hidden=false;$('nr-home').hidden=false;$('nr-room').hidden=true;$('nr-exit').hidden=true;$('nr-bottom').hidden=true;$('nr-heading').textContent='NEON RALLY';send({type:'list'});}
 function connect(){
  if(WS_URL.includes('YOUR-SERVER-DOMAIN')){$('nr-connection').textContent='● УКАЖИ WS_URL';$('nr-tables').textContent='Укажи свой wss:// адрес Render в коде.';return;}
  ws=new WebSocket(WS_URL);$('nr-connection').textContent='● ПОДКЛЮЧЕНИЕ';
- ws.onopen=()=>{$('nr-connection').textContent='● ОНЛАЙН';send({type:'list'});if(roomId)send({type:'resume',id:roomId,token});};
+ ws.onopen=()=>{$('nr-connection').textContent='● ОНЛАЙН';clearInterval(pingTimer);const ping=()=>send({type:'ping',sent:Date.now()});ping();pingTimer=setInterval(ping,1000);send({type:'list'});if(roomId)send({type:'resume',id:roomId,token});};
  ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch{return}
+  if(m.type==='pong'){const sample=Date.now()-m.sent;if(sample>=0&&sample<3000){rtt=clockReady?rtt*.7+sample*.3:sample;const offset=m.serverTime-(m.sent+sample/2);clockOffset=clockReady?clockOffset*.8+offset*.2:offset;clockReady=true;$('nr-connection').textContent=`● ${IS_LAN?'LAN':'ОНЛАЙН'} · ${Math.round(rtt)} мс`;}return;}
   if(m.type==='lobby'){lobby=m.tables||[];tablesUI();}
   if(m.type==='joined'){side=m.side;roomId=m.id;lastToast='';$('nr-code').textContent=m.id;mine.initialized=false;theirs.initialized=false;ballInitialized=false;}
   if(m.type==='state'&&m.id===roomId)stateUI(m);
@@ -122,9 +128,19 @@ function connect(){
   if(m.type==='kicked'){home();toast(m.message,3500);}
   if(m.type==='error')toast(m.message,3000);
  };
- ws.onclose=()=>{$('nr-connection').textContent='● НЕТ СОЕДИНЕНИЯ';root.classList.remove('nr-playing');localTarget=null;if(roomId)toast('Переподключаемся...',2400);clearTimeout(retry);retry=setTimeout(connect,2000);};
+ ws.onclose=()=>{clearInterval(pingTimer);pendingPrediction=null;clockReady=false;$('nr-connection').textContent='● НЕТ СОЕДИНЕНИЯ';root.classList.remove('nr-playing');localTarget=null;if(roomId)toast('Переподключаемся...',2400);clearTimeout(retry);retry=setTimeout(connect,2000);};
  ws.onerror=()=>{};
 }
+$('nr-lan').onclick=()=>{$('nr-lan-panel').hidden=!$('nr-lan-panel').hidden;};
+$('nr-lan-open').onclick=()=>{
+ const text=$('nr-lan-address').value.trim();
+ const match=text.match(/^(localhost|(?:\d{1,3}\.){3}\d{1,3})(?::(\d{1,5}))?$/);
+ if(!match){$('nr-lan-error').textContent='Пример: 192.168.1.10:8080';return;}
+ const host=match[1],parts=host.split('.').map(Number),port=Number(match[2]||8080);
+ if((host!=='localhost'&&(parts.some(n=>n>255)||!(parts[0]===10||parts[0]===127||(parts[0]===192&&parts[1]===168)||(parts[0]===172&&parts[1]>=16&&parts[1]<=31))))||port<1||port>65535){$('nr-lan-error').textContent='Введи локальный адрес компьютера в вашей сети.';return;}
+ const a=document.createElement('a');a.href=`http://${host}:${port}/play`;a.target='_blank';a.rel='noopener';a.click();
+};
+if(IS_LAN){$('nr-lan').hidden=true;$('nr-create').textContent='+ СОЗДАТЬ LAN-СТОЛ';$('nr-subtitle').textContent='Локальная сеть · 1 на 1 · до 9 очков';}
 $('nr-create').onclick=()=>send({type:'create',name:nick(),token});$('nr-refresh').onclick=()=>send({type:'list'});$('nr-ready').onclick=()=>send({type:'ready'});
 $('nr-leave').onclick=$('nr-exit').onclick=()=>{send({type:'leave'});home();};
 function pointer(e){
@@ -135,39 +151,146 @@ function pointer(e){
  ndc.unproject(camera);
  const x=side===1?-ndc.x:ndc.x,y=side===1?-ndc.y:ndc.y;
  localTarget={x:THREE.MathUtils.clamp(x,-58,58),y:side===0?THREE.MathUtils.clamp(y,-112,-PAD):THREE.MathUtils.clamp(y,PAD,112)};
- pendingMove=true;
- const time=performance.now();if(time-lastSend<16)return;lastSend=time;
- send({type:'move',...localTarget});pendingMove=false;
+ const time=performance.now();
+ if(lastPointer){strokeX=THREE.MathUtils.clamp((localTarget.x-lastPointer.x)/Math.max(.008,(time-lastPointer.t)/1000),-450,450);}lastPointer={x:localTarget.x,t:time};pendingMove=true;
+ if(time-lastSend<8)return;lastSend=time;
+ send({type:'move',...localTarget,strokeX});pendingMove=false;
 }
-stage.addEventListener('pointermove',pointer);stage.addEventListener('pointerdown',e=>{pointer(e);if(snapshot?.ball.phase==='serve')send({type:'serve'});});
+stage.addEventListener('pointermove',pointer);stage.addEventListener('pointerdown',e=>{pointer(e);if(snapshot?.ball.phase==='serve'){serveArmed=true;send({type:'serve'});}});
 function resize(){const w=stage.clientWidth,h=stage.clientHeight;if(!w||!h)return;renderer.setSize(w,h,false);const a=w/h,worldH=Math.max(252,136/a),worldW=worldH*a;camera.left=-worldW/2;camera.right=worldW/2;camera.top=worldH/2;camera.bottom=-worldH/2;camera.updateProjectionMatrix();}
 new ResizeObserver(resize).observe(stage);resize();
+// BEGIN SHARED PHYSICS: same collision/flight functions as server.js.
+const predictor=(()=>{
+ const WIDTH=W,HEIGHT=H,WALL_HEIGHT=32,DT=1/120;
+ const clamp=(n,a,b)=>Math.max(a,Math.min(b,n)),other=i=>1-i,sign=i=>i===0?1:-1;
+ const now=()=>Date.now()+clockOffset,randomUUID=uid,names=r=>r.players;
+ const sendState=()=>{},lobby=()=>{},kickUnready=()=>{};
+ function finish(r,winner,msg){r.status='finished';r.winner=winner;r.msg=msg;}
+function resetServe(r) {
+ r.round=(r.round||0)+1;r.armed=false;r.effect=null;r.history=[];r.pendingPoint=null;
+ r.ball={x:0,y:r.server===0?-88:88,z:10,vx:0,vy:0,vz:0,phase:'serve',last:r.server,bounces:0,walls:0,spin:0,shot:0};
+ for(let i=0;i<2;i++){const p=r.paddles[i];Object.assign(p,{x:0,y:i===0?-102:102,tx:0,ty:i===0?-102:102,vx:0,vy:0});}
+}
+function point(r,winner,msg) {
+ if(r.status!=='playing'||r.ball.phase==='dead')return;
+ // Short grace window accepts a legitimate return already in flight over the network.
+ if(r.lagGrace&&!r.resolvingPoint&&['Соперник не вернул мяч','Два отскока на половине соперника','Мяч вышел из игровой зоны'].includes(msg)&&r.ball.bounces>=1){
+  r.pendingPoint={winner,msg,until:now()+100};r.ball.phase='pending';return;
+ }
+ r.ball.phase='dead';r.score[winner]++;r.server=winner;r.msg=msg;
+ r.ball.vx=r.ball.vy=r.ball.vz=0;r.armed=false;
+ if(r.score[winner]>=9&&r.score[winner]-r.score[other(winner)]>=2)return finish(r,winner,`Победил ${names(r)[winner]}!`);
+ r.status='intermission';r.deadline=now()+1800;sendState(r);lobby();
+}
+function effect(r,kind,b){r.effect={id:randomUUID(),kind,x:b.x,y:b.y,z:b.z};}
+function hit(r,i,serving) {
+ const b=r.ball,p=r.paddles[i],dir=sign(i);
+ const aim=clamp(p.vx*.055+(b.x-p.x)*2.5,-25,25);
+ const targetY=dir*(serving?38:48), targetX=clamp(b.x+aim,-31,31);
+ const duration=clamp(Math.abs(targetY-b.y)/195,.38,.95);
+ b.vx=(targetX-b.x)/duration;b.vy=(targetY-b.y)/duration;
+ b.z=10;b.vz=(R-b.z+150*duration*duration)/duration;
+ b.shot=(b.shot||0)+1;r.pendingPoint=null;b.spin=clamp(p.vx*dir/450,-1,1);b.last=i;b.bounces=0;b.walls=0;b.phase='flight';b.cooldown=.10;r.armed=false;
+ effect(r,'hit',b);r.msg=serving?'Подача':'Розыгрыш';
+}
+function contact(p,b,old=b,i=0){
+ // Use the same projected position seen by this player. The racket automatically
+ // meets the incoming height; there is no separate height control in this game.
+ const by=old.y+sign(i)*old.z*.38,ey=b.y+sign(i)*b.z*.38;
+ const ax=(old.x-(p.ox??p.x))/(PAD+R),ay=(by-(p.oy??p.y))/(PAD*1.13+R);
+ const dx=(b.x-p.x)/(PAD+R)-ax,dy=(ey-p.y)/(PAD*1.13+R)-ay;
+ const t=clamp(-(ax*dx+ay*dy)/(dx*dx+dy*dy||1),0,1);
+ const z=old.z+(b.z-old.z)*t;
+ return z>=R&&z<=55&&Math.hypot(ax+dx*t,ay+dy*t)<=1;
+}
+function tick(r) {
+ if(r.status==='ready'){if(now()>=r.deadline)kickUnready(r);return;}
+ if(r.status==='paused'){if(now()>=r.graceUntil)finish(r,other(r.disconnected),'Соперник отключился');return;}
+ if(r.status==='intermission'){if(now()>=r.deadline){resetServe(r);r.status='playing';r.deadline=0;r.msg='Кликни, затем коснись мяча ракеткой';sendState(r);lobby();}return;}
+ if(r.status!=='playing')return;
+ for(const p of r.paddles){p.ox=p.x;p.oy=p.y;p.x=p.tx;p.y=p.ty;p.vx=clamp((p.x-p.ox)/DT,-450,450);p.vy=clamp((p.y-p.oy)/DT,-450,450);}
+ const b=r.ball;
+ if(r.pendingPoint){if(now()>=r.pendingPoint.until){const q=r.pendingPoint;r.pendingPoint=null;r.resolvingPoint=true;point(r,q.winner,q.msg);r.resolvingPoint=false;}return;}
+ if(r.lagGrace&&b.phase==='flight'){
+  r.history??=[];r.history.push({t:now(),round:r.round,b:{...b},paddles:r.paddles.map(p=>({x:p.x,y:p.y}))});while(r.history.length&&now()-r.history[0].t>160)r.history.shift();
+ }
+ if(b.phase==='serve'){const p=r.paddles[r.server];if(r.armed&&contact(p,b,b,r.server)&&Math.hypot(p.vx,p.vy)>5)hit(r,r.server,true);return;}
+ if(b.phase!=='flight')return;
+ const old={x:b.x,y:b.y,z:b.z};b.cooldown=Math.max(0,(b.cooldown||0)-DT);
+ // Side spin applies a bounded sideways Magnus acceleration.
+ const spin=b.spin||0, speed=Math.hypot(b.vx,b.vy)||1;
+ b.vx+=spin*65*(b.vy/speed)*DT;b.vy-=spin*65*(b.vx/speed)*DT;b.spin=spin*Math.exp(-.12*DT);
+ b.x+=b.vx*DT;b.y+=b.vy*DT;b.z+=b.vz*DT-150*DT*DT;b.vz-=300*DT;
+ if(old.y*b.y<=0&&old.y!==b.y){const t=-old.y/(b.y-old.y),z=old.z+(b.z-old.z)*t;if(z<R+6)return point(r,other(b.last),'Мяч попал в сетку');}
+ // A wall exists only beside the tabletop, not in the run-up area.
+ const limit=WIDTH/2-R;
+ if(Math.abs(b.y)<=HEIGHT/2 && b.z<=WALL_HEIGHT+R && Math.abs(b.x)>=limit && ((b.x>0&&b.vx>0)||(b.x<0&&b.vx<0))){
+  const half=b.y<0?0:1;b.walls=(b.walls||0)+1;
+  if(half===b.last)return point(r,other(b.last),'Фол: рикошет на своей половине');
+  if(b.walls>1)return point(r,other(b.last),'Фол: второй рикошет от стены');
+  b.x=Math.sign(b.x)*limit;b.vx*=-.94;b.spin*=-.75;effect(r,'wall',b);
+ }
+ const receiver=other(b.last),p=r.paddles[receiver];
+ if(b.cooldown===0&&contact(p,b,old,receiver)){
+  if(b.bounces!==1)return point(r,b.last,'Удар до отскока: фол');
+  hit(r,receiver,false);return;
+ }
+ if(b.z<=R&&b.vz<0){
+  const onTable=Math.abs(b.x)<=WIDTH/2&&Math.abs(b.y)<=HEIGHT/2;
+  if(!onTable)return point(r,b.bounces===1?b.last:other(b.last),b.bounces===1?'Соперник не вернул мяч':'Мяч вне стола');
+  const half=b.y<0?0:1;
+  if(half===b.last)return point(r,other(b.last),'Мяч коснулся своей половины');
+  b.bounces++;if(b.bounces>1)return point(r,b.last,'Два отскока на половине соперника');
+  b.z=R;b.vz=Math.abs(b.vz)*.87;b.vx+=(b.spin||0)*sign(b.last)*22;effect(r,'bounce',b);
+ }
+ if(Math.abs(b.x)>80||Math.abs(b.y)>140)return point(r,b.bounces===1?b.last:other(b.last),'Мяч вышел из игровой зоны');
+}
+return {tick};})();
+// END SHARED PHYSICS
+let serveArmed=false;
+function cloneForPrediction(s){return {...s,players:[...s.players],score:[...s.score],ball:{...s.ball},paddles:s.paddles.map(p=>({...p,tx:p.x,ty:p.y})),armed:serveArmed,lagGrace:false};}
+function advancePrediction(r,seconds){
+ if(localTarget){r.paddles[side].tx=localTarget.x;r.paddles[side].ty=localTarget.y;}
+ for(let j=0;j<Math.ceil(Math.max(0,seconds)*120)&&r.status==='playing';j++)predictor.tick(r);
+ return r;
+}
+function predict(t){
+ const s=snapshot;if(!s||s.status!=='playing'||t-lastStateAt>250)return s;
+ if(pendingPrediction){
+  if(t-pendingPrediction.sentAt>250){pendingPrediction=null;}
+  else {const q=pendingPrediction;advancePrediction(q.r,Math.min(.035,(t-q.lastAt)/1000));q.lastAt=t;return q.r.status==='playing'?q.r:s;}
+ }
+ const r=cloneForPrediction(s);
+ const age=clockReady?(Date.now()+clockOffset-s.serverTime)/1000:(t-lastStateAt+rtt/2)/1000;
+ advancePrediction(r,Math.min(.10,Math.max(1/120,age)));
+ if(r.status==='playing'&&r.ball.shot!==s.ball.shot&&r.ball.last===side&&localTarget){
+  const isServe=s.ball.phase==='serve';
+  if(!isServe)send({type:'move',...localTarget,strike:true,round:s.round,shot:s.ball.shot,strokeX});
+  pendingPrediction={r,round:s.round,baseShot:s.ball.shot,sentAt:t,lastAt:t};serveArmed=false;
+ }
+ return r.status==='playing'?r:s;
+}
 const flip=(p)=>side===1?[-p.x,-p.y]:[p.x,p.y];
 function animate(t){
  requestAnimationFrame(animate);
- if(pendingMove&&localTarget&&snapshot?.status==='playing'&&t-lastSend>=16){lastSend=t;send({type:'move',...localTarget});pendingMove=false;}
+ if(pendingMove&&localTarget&&snapshot?.status==='playing'&&t-lastSend>=8){lastSend=t;send({type:'move',...localTarget,strokeX});pendingMove=false;}
  // Keep field fixed. Transform player positions instead of rotating the world.
  const s=snapshot,show=!!s&&['playing','intermission','paused','finished'].includes(s.status);
  for(const item of [mine,theirs])for(const m of item.parts)m.visible=show;
  balls.forEach(m=>m.visible=show);
  if(show){
-  // Render a short buffered timeline rather than chasing the newest packet.
-  const target=t-65;let f0=frames[0],f1=frames[frames.length-1];
-  for(let j=1;j<frames.length;j++){if(frames[j].t>=target){f0=frames[j-1];f1=frames[j];break;}f0=frames[j];}
-  const k=f1.t===f0.t?1:THREE.MathUtils.clamp((target-f0.t)/(f1.t-f0.t),0,1);
-  const mix=(a,b,key)=>a[key]+(b[key]-a[key])*k;
+  const visual=predict(t)||s;
   for(const [item,i] of [[mine,side],[theirs,1-side]]){
-   const p0=f0.s.paddles[i],p1=f1.s.paddles[i];const [x,y]=flip(i===side&&localTarget&&s.status==='playing'?localTarget:{x:mix(p0,p1,'x'),y:mix(p0,p1,'y')});
-   item.group.position.set(x,y,0);item.group.rotation.z=(i===side?0:Math.PI)+THREE.MathUtils.clamp((p1.x-p0.x)*.06,-.5,.5);
+   const p=visual.paddles[i];const [x,y]=flip(i===side&&localTarget&&s.status==='playing'?localTarget:p);
+   item.group.position.set(x,y,0);item.group.rotation.z=(i===side?0:Math.PI)+THREE.MathUtils.clamp((p.vx||0)*.0008,-.35,.35);
   }
-  const b0=f0.s.ball,b1=f1.s.ball;
-  const [x,y]=flip({x:mix(b0,b1,'x'),y:mix(b0,b1,'y')});
-  const z=Number.isFinite(b0.z)&&Number.isFinite(b1.z)?mix(b0,b1,'z'):10,offset=heightOffset(z);
+  const [x,y]=flip(visual.ball);
+  const z=Number.isFinite(visual.ball.z)?visual.ball.z:10,offset=heightOffset(z);
   shadow.position.set(x,y,1.3);shadow.scale.setScalar(1+z*.022);shadow.material.opacity=Math.max(.12,.65-z*.015);
   for(const m of [ball,ballGlow]){m.position.set(x,y+offset,12);m.scale.setScalar(1+z*.009);}
-  const spin=s.ball.spin||0,angle=t*.012*(1+Math.abs(spin)*4)*Math.sign(spin||1);spinMark.position.set(x+Math.cos(angle)*R*.65,y+offset+Math.sin(angle)*R*.65,12.4);
+  const spin=visual.ball.spin||0,angle=t*.012*(1+Math.abs(spin)*4)*Math.sign(spin||1);spinMark.position.set(x+Math.cos(angle)*R*.65,y+offset+Math.sin(angle)*R*.65,12.4);
   const positions=tether.geometry.attributes.position;positions.setXYZ(0,x,y,2);positions.setXYZ(1,x,y+offset,10);positions.needsUpdate=true;tether.visible=true;
-  if(s.effect&&s.effect.id!==seenEffect){seenEffect=s.effect.id;impactAt=t;const [ex,ey]=flip(s.effect);impact.position.set(ex,ey+(s.effect.kind==='hit'?heightOffset(s.effect.z):0),13);impact.material.color.set(s.effect.kind==='hit'?'#fff2a8':s.effect.kind==='wall'?'#ff8edf':'#5ee9ff');}
+  if(visual.effect&&visual.effect.id!==seenEffect){seenEffect=visual.effect.id;impactAt=t;const [ex,ey]=flip(visual.effect);impact.position.set(ex,ey+(visual.effect.kind==='hit'?heightOffset(visual.effect.z):0),13);impact.material.color.set(visual.effect.kind==='hit'?'#fff2a8':visual.effect.kind==='wall'?'#ff8edf':'#5ee9ff');}
   const age=(t-impactAt)/420;impact.visible=age<1&&impactAt>0;impact.scale.setScalar(1+age*7);impact.material.opacity=Math.max(0,1-age);
   $('nr-bottom').textContent=s.status==='intermission'?`${s.msg} · следующий розыгрыш через ${Math.max(0,(s.deadline-Date.now())/1000).toFixed(1)} с`:s.ball.phase==='serve'?(s.server===side?'КЛИКНИ И ПОДВЕДИ РАКЕТКУ К МЯЧУ':'ПОДАЧА СОПЕРНИКА'):`ВРАЩЕНИЕ: ${Math.round(Math.abs(s.ball.spin||0)*100)}% · БОКОВОЙ ВЗМАХ ЗАКРУЧИВАЕТ МЯЧ`;
  }else{tether.visible=false;impact.visible=false;mine.initialized=false;theirs.initialized=false;ballInitialized=false;}
